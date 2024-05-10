@@ -1,0 +1,94 @@
+#!/usr/bin/env python
+import sys
+import time
+from easysnmp import Session
+
+if len(sys.argv) < 5:
+    print("Usage: prober <Agent IP:port:community> <sample frequency> <samples> <OID1> <OID2> ... <OIDn>")
+    sys.exit(1)
+
+agent_details = sys.argv[1].split(":")
+agent_ip = agent_details[0]
+agent_port = int(agent_details[1])
+agent_community = agent_details[2]
+sample_freq = float(sys.argv[2])
+samples = int(sys.argv[3])
+oids = sys.argv[4:]
+
+last_values = {}
+last_times = {}
+
+def get_counter_value(oid):
+    session = Session(hostname=agent_ip, community=agent_community, version=2, udp_port=agent_port, timeout=1, retries=5)
+    try:
+        response = session.get(oid)
+        if response.error:
+            print(response.error)
+            return None
+        return int(response.value)
+    except Exception as e:
+        print(e)
+        return None
+
+def calculate_rate(oid, value, last_value, last_time, current_time):
+    if oid not in last_values:
+        last_values[oid] = value
+        last_times[oid] = current_time
+        return None
+
+    delta_time = current_time - last_times[oid]
+    delta_value = value - last_values[oid]
+
+    if delta_time == 0:
+        return None
+
+    rate = delta_value / delta_time
+
+    # Handle counter wrap
+    if rate < 0:
+        rate += 2**32
+
+    last_values[oid] = value
+    last_times[oid] = current_time
+
+    return rate
+
+while True:
+    current_time = int(time.time())
+
+    values = []
+    for oid in oids:
+        value = get_counter_value(oid)
+
+        if value is None:
+            break
+
+        values.append(value)
+
+    if len(values) != len(oids):
+        # One or more OIDs could not be read
+        time.sleep(1 / sample_freq)
+        continue
+
+    rates = []
+    for i in range(len(oids)):
+        rate = calculate_rate(oids[i], values[i], last_values.get(oids[i]), last_times.get(oids[i]), current_time)
+        if rate is not None:
+            rates.append(rate)
+
+    if len(rates) == 0:
+        # None of the OIDs had a valid rate
+        time.sleep(1 / sample_freq)
+        continue
+
+    # Construct the output line
+    output = str(current_time)
+    for rate in rates:
+        output += " | " + str(int(rate))  # Assuming the rates are integers
+    print(output)
+
+    samples -= 1
+    if samples == 0:
+        break
+
+    time.sleep(1 / sample_freq)
